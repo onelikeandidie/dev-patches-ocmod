@@ -68,9 +68,19 @@ class ControllerExtensionModuleDevPatches extends Controller {
              * The first argument is the code of the module and the second argument contains all the post values
              * The code must be same as your file name
              */
+            $new_settings = $this->request->post;
+            // Check if the extension was disabled/enabled and apply patches accordingly
+            $old_status = $this->model_setting_setting->getSettingValue($this->getSettingKey("status"));
+            if ($new_settings["status"] === "0" && $old_status === "1") {
+                // Remove patches
+                $this->removeUserTokenPatch();
+            } else if ($new_settings["status"] === "1" && $old_status === "0") {
+                // Add patches back
+                $this->addUserTokenPatch();
+            }
             // The post values must be turned into OpenCart compatible simple list
             $save_data = array();
-            foreach ($this->request->post as $key => $value) {
+            foreach ($new_settings as $key => $value) {
                 $save_data[$this->getSettingKey($key)] = $value;
             }
             $this->model_setting_setting->editSetting($this->getSettingCode(), $save_data);
@@ -202,6 +212,17 @@ class ControllerExtensionModuleDevPatches extends Controller {
         $this->model_setting_event->deleteEventByCode(
             $this->getSettingCode()
         );
+        // Remote the direct patches
+        $this->removeUserTokenPatch();
+    }
+
+    public function isUserTokenPatched(&$original_file) {
+        $search = $this->getUserTokenPatchStr();
+        $path   = $this->getUserTokenPatchPath();
+        $original_file = $original_file ?? file_get_contents($path);
+
+        $pos = strpos($original_file, $search);
+        return $pos !== false;
     }
 
     public function addUserTokenPatch() {
@@ -209,17 +230,23 @@ class ControllerExtensionModuleDevPatches extends Controller {
         $path   = $this->getUserTokenPatchPath();
         $search = $this->getUserTokenPatchSearch();
         $original_file = file_get_contents($path);
+
+        // Skip if patch is already applied
+        if ($this->isUserTokenPatched($original_file)) {
+            return false;
+        }
         
         $pos = strpos($original_file, $search);
         if ($pos === false) {
             error_log( "[dev_patches]: Could not apply patch, file did not contain expected contents!\n"
                 . "Path: " . $path . " Expected: `" . $search . "`"
             );
+            return false;
         }
 
         $insert_pos = $pos + strlen($search);
         $file = $this->slice($original_file, $insert_pos, $insert_pos, $patch);
-        file_put_contents($path, $file);
+        return file_put_contents($path, $file) !== false;
     }
 
     public function removeUserTokenPatch() {
@@ -227,16 +254,17 @@ class ControllerExtensionModuleDevPatches extends Controller {
         $search = $this->getUserTokenPatchStr();
         $original_file = file_get_contents($path);
         
-        $pos = strpos($original_file, $search);
-        if ($pos === false) {
+        $start_pos = strpos($original_file, $search);
+        if ($start_pos === false) {
             error_log( "[dev_patches]: Could not remove patch, file did not contain expected contents!\n"
                 . "Path: " . $path . " Expected: `" . $search . "`"
             );
+            return false;
         }
 
-        $insert_pos = $pos + strlen($search);
-        $file = $this->slice($original_file, $insert_pos, $insert_pos, "");
-        file_put_contents($path, $file);
+        $end_pos = $start_pos + strlen($search);
+        $file = $this->slice($original_file, $start_pos, $end_pos, "");
+        return file_put_contents($path, $file) === false;
     }
     
     public function addDevModeBanner(&$route, &$args, &$output) {
